@@ -429,7 +429,7 @@ a{color:var(--gold);text-decoration:none}
 #toast.er{border-left:3px solid var(--red)}
 #toast.in{border-left:3px solid var(--blue)}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -1119,7 +1119,7 @@ const S={
 const LEVELS=['Beginner','Elementary','Pre-Intermediate','Intermediate','Upper-Intermediate','Advanced','Master'];
 
 // ═══════════ PERSIST ═══════════
-function save(){try{localStorage.setItem('ea_v',JSON.stringify(S.vocab));localStorage.setItem('ea_a',JSON.stringify(S.alex));localStorage.setItem('ea_r',JSON.stringify(S.reading));localStorage.setItem('ea_k',JSON.stringify(S.keys));localStorage.setItem('ea_lp',JSON.stringify(S.learnerProfile));}catch(e){}}
+function save(){try{localStorage.setItem('ea_v',JSON.stringify(S.vocab));localStorage.setItem('ea_a',JSON.stringify(S.alex));localStorage.setItem('ea_r',JSON.stringify(S.reading));localStorage.setItem('ea_k',JSON.stringify(S.keys));localStorage.setItem('ea_lp',JSON.stringify(S.learnerProfile));}catch(e){}if(typeof sbUser!=='undefined'&&sbUser)saveToCloud();}
 function load(){try{const v=localStorage.getItem('ea_v');if(v)S.vocab=JSON.parse(v);const a=localStorage.getItem('ea_a');if(a)S.alex={...S.alex,...JSON.parse(a)};const r=localStorage.getItem('ea_r');if(r)S.reading={...S.reading,...JSON.parse(r)};const k=localStorage.getItem('ea_k');if(k)S.keys={...S.keys,...JSON.parse(k)};const lp=localStorage.getItem('ea_lp');if(lp)S.learnerProfile=JSON.parse(lp);}catch(e){}}
 
 // ═══════════ NAV ═══════════
@@ -1157,14 +1157,16 @@ function saveSett(){
   S.keys.voice=document.getElementById('svid').value.trim();
   const sbUrl=document.getElementById('s-sb-url').value.trim();
   const sbKey=document.getElementById('s-sb-key').value.trim();
+  let sbOk=true;
   if(sbUrl&&sbKey){
     localStorage.setItem('ea_sb_url',sbUrl);
     localStorage.setItem('ea_sb_key',sbKey);
-    initSupabase(sbUrl,sbKey);
+    sbOk=initSupabase(sbUrl,sbKey);
   }
   save();closeSett();updateNoKey();
   if(S.keys.groq)document.getElementById('key-tip').style.display='none';
-  toast('Kaydedildi!','ok');
+  if(sbUrl&&sbKey&&sbOk) toast('✓ Kaydedildi — Supabase bağlandı','ok');
+  else if(!(sbUrl&&sbKey)) toast('Kaydedildi!','ok');
 }
 function testVoice(){
   const elKey=document.getElementById('sel').value.trim()||S.keys.el;
@@ -2917,7 +2919,7 @@ let dfRevIdx=0;
 let dfRevRevealed=false;
 let dfRevSession={correct:0,total:0};
 
-function dfSave(){try{localStorage.setItem('ea_df',JSON.stringify(dfWords));}catch(e){}}
+function dfSave(){try{localStorage.setItem('ea_df',JSON.stringify(dfWords));}catch(e){}if(typeof sbUser!=='undefined'&&sbUser)saveToCloud();}
 function dfLoad(){try{const d=localStorage.getItem('ea_df');if(d)dfWords=JSON.parse(d);}catch(e){}}
 
 // ── HAZIR KELİME BANKASI (built-in seed packs) ──
@@ -3256,22 +3258,36 @@ function showDfList(){
 // ═══════════ SUPABASE / CLOUD SYNC ═══════════
 let sbClient=null,sbUser=null;
 let syncTimeout=null;
+let sbInitKey=null;
 
 function initSupabase(url,anonKey){
   try{
-    if(!url||!anonKey)return;
-    if(typeof supabase==='undefined'){console.warn('Supabase SDK not loaded');return;}
+    if(!url||!anonKey){toast('Supabase URL ve key gerekli','er');return false;}
+    const key=url+'|'+anonKey;
+    if(sbClient&&sbInitKey===key)return true; // already connected with same config
+    if(typeof supabase==='undefined'){
+      toast('Supabase SDK yüklenemedi — internet bağlantını kontrol et','er');
+      console.warn('Supabase SDK not loaded (window.supabase is undefined)');
+      return false;
+    }
     sbClient=supabase.createClient(url,anonKey);
+    sbInitKey=key;
     sbClient.auth.onAuthStateChange((event,session)=>{
       sbUser=session?.user||null;
       if(sbUser){updateUserUI(sbUser);loadFromCloud();}
       else updateUserUI(null);
     });
-    sbClient.auth.getSession().then(({data})=>{
+    sbClient.auth.getSession().then(({data,error})=>{
+      if(error){toast('Supabase bağlantı hatası: '+error.message,'er');return;}
       sbUser=data?.session?.user||null;
       if(sbUser){updateUserUI(sbUser);loadFromCloud();}
     });
-  }catch(e){console.warn('Supabase init error:',e.message);}
+    return true;
+  }catch(e){
+    toast('Supabase init hatası: '+e.message,'er');
+    console.warn('Supabase init error:',e.message);
+    return false;
+  }
 }
 
 function toggleLoginPop(){
@@ -3374,18 +3390,6 @@ function showSyncIcon(ok){
   }
   el.textContent=ok?'☁️ Senkron':'⚠️';
   el.style.color=ok?'var(--grn)':'var(--gold)';
-}
-
-// Patch save() to also sync to cloud
-const _origSave=save;
-function save(){
-  _origSave();
-  if(sbUser) saveToCloud();
-}
-const _origDfSave=dfSave;
-function dfSave(){
-  _origDfSave();
-  if(sbUser) saveToCloud();
 }
 
 // ═══════════ THEMES ═══════════
