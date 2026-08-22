@@ -954,6 +954,7 @@ a{color:var(--gold);text-decoration:none}
   <div style="display:flex;height:100%;overflow:hidden">
     <div style="width:280px;flex-shrink:0;background:var(--sur);border-right:1px solid var(--bor);overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px">
       <div style="font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:600">📒 Kelime Defteri</div>
+      <p style="font-size:11.5px;color:var(--dim);margin-top:-10px;line-height:1.5">Vocabulary, Reading ve Coach Alex ile ortak — nereden eklersen ekle, hepsi burada büyür.</p>
       <div style="background:var(--gd);border:1px solid var(--gb);border-radius:var(--r);padding:16px;text-align:center">
         <div style="font-size:38px;font-family:'Cormorant Garamond',serif;color:var(--gold);font-weight:600" id="df-due-count">0</div>
         <div style="font-size:13px;color:var(--dim);margin-top:2px">Bugün tekrar edilecek</div>
@@ -1077,7 +1078,6 @@ a{color:var(--gold);text-decoration:none}
       </p>
       <textarea class="fi fta" readonly onclick="this.select()" style="min-height:120px;font-size:11px;font-family:monospace;margin-top:6px">create table public.user_data (
   user_id uuid references auth.users(id) primary key,
-  vocab jsonb default '[]',
   alex jsonb default '{}',
   reading jsonb default '{}',
   learner_profile jsonb,
@@ -1104,7 +1104,6 @@ create policy "own update" on public.user_data for update using (auth.uid() = us
 // ═══════════ STATE ═══════════
 const S={
   keys:{groq:'',el:'',voice:''},
-  vocab:[],
   alex:{turns:0,corrections:0,totalScore:0,xp:0,level:1},
   reading:{count:0,wordsSaved:0},
   autoPlay:false,
@@ -1119,8 +1118,30 @@ const S={
 const LEVELS=['Beginner','Elementary','Pre-Intermediate','Intermediate','Upper-Intermediate','Advanced','Master'];
 
 // ═══════════ PERSIST ═══════════
-function save(){try{localStorage.setItem('ea_v',JSON.stringify(S.vocab));localStorage.setItem('ea_a',JSON.stringify(S.alex));localStorage.setItem('ea_r',JSON.stringify(S.reading));localStorage.setItem('ea_k',JSON.stringify(S.keys));localStorage.setItem('ea_lp',JSON.stringify(S.learnerProfile));}catch(e){}if(typeof sbUser!=='undefined'&&sbUser)saveToCloud();}
-function load(){try{const v=localStorage.getItem('ea_v');if(v)S.vocab=JSON.parse(v);const a=localStorage.getItem('ea_a');if(a)S.alex={...S.alex,...JSON.parse(a)};const r=localStorage.getItem('ea_r');if(r)S.reading={...S.reading,...JSON.parse(r)};const k=localStorage.getItem('ea_k');if(k)S.keys={...S.keys,...JSON.parse(k)};const lp=localStorage.getItem('ea_lp');if(lp)S.learnerProfile=JSON.parse(lp);}catch(e){}}
+function save(){try{localStorage.setItem('ea_a',JSON.stringify(S.alex));localStorage.setItem('ea_r',JSON.stringify(S.reading));localStorage.setItem('ea_k',JSON.stringify(S.keys));localStorage.setItem('ea_lp',JSON.stringify(S.learnerProfile));}catch(e){}if(typeof sbUser!=='undefined'&&sbUser)saveToCloud();}
+function load(){
+  try{
+    dfLoad();
+    // One-time migration: merge old separate vocab list into the unified word bank
+    const v=localStorage.getItem('ea_v');
+    if(v){
+      const oldVocab=JSON.parse(v);
+      let migrated=0;
+      oldVocab.forEach(ov=>{
+        if(!dfWords.find(x=>x.word.toLowerCase()===ov.word.toLowerCase())){
+          dfWords.push(dfNewWord(ov.word,ov.tr||ov.def||'',{def:ov.def,ex:ov.ex,tr:ov.tr,added:ov.added,source:'manual'}));
+          migrated++;
+        }
+      });
+      if(migrated>0)dfSave();
+      localStorage.removeItem('ea_v');
+    }
+    const a=localStorage.getItem('ea_a');if(a)S.alex={...S.alex,...JSON.parse(a)};
+    const r=localStorage.getItem('ea_r');if(r)S.reading={...S.reading,...JSON.parse(r)};
+    const k=localStorage.getItem('ea_k');if(k)S.keys={...S.keys,...JSON.parse(k)};
+    const lp=localStorage.getItem('ea_lp');if(lp)S.learnerProfile=JSON.parse(lp);
+  }catch(e){}
+}
 
 // ═══════════ NAV ═══════════
 function go(id){
@@ -1186,7 +1207,7 @@ function toast(m,t='in'){const el=document.getElementById('toast');el.textConten
 // ═══════════ HUB ═══════════
 function refreshHub(){
   document.getElementById('h-turns').textContent=S.alex.turns;
-  document.getElementById('h-words').textContent=S.vocab.length;
+  document.getElementById('h-words').textContent=dfWords.length;
   document.getElementById('h-reads').textContent=S.reading.count;
   document.getElementById('h-listen').textContent=LS.listenDone+LS.dictDone+LS.shadDone;
   document.getElementById('h-level').textContent=S.alex.level;
@@ -1245,7 +1266,16 @@ function getASYS(){
   if(profile){
     profileCtx=`\nÖĞRENCİ PROFİLİ: Seviye ${profile.level} | Gelişim: ${profile.weaknesses||'genel'} | Odak: ${profile.currentTopic||'Genel'}`;
   }
-  return `Sen Alex'sin — gerçek bir İngilizce öğretmenisin. Türkçe açıklarsın, öğrenci İngilizce yazar.${profileCtx}
+  // Kelime defterinden bugün tekrar edilmesi gereken kelimeleri Alex'e hatırlat
+  let dueCtx='';
+  if(typeof dfDueWords==='function'){
+    const due=dfDueWords().slice(0,8);
+    if(due.length){
+      dueCtx=`\n\nÖĞRENCİNİN TEKRAR ETMESİ GEREKEN KELİMELER (kelime defterinden, bugün vadesi geldi): ${due.map(w=>w.word).join(', ')}.
+Bunları UNUTMA. Sohbetin doğal bir noktasında bu kelimelerden 1-2 tanesini kullan ya da öğrenciye anlamını sor ("${due[0]?.word}" kelimesini hatırlıyor musun gibi). Zorlamadan, konuşmanın akışı içinde yap.`;
+    }
+  }
+  return `Sen Alex'sin — gerçek bir İngilizce öğretmenisin. Türkçe açıklarsın, öğrenci İngilizce yazar.${profileCtx}${dueCtx}
 
 DİL KURALI — KESİN: YALNIZCA Türkçe ve İngilizce kullan. Almanca, Fransızca, Çince, Japonca veya başka HİÇBİR dil/kelime/karakter YASAK. "möglich", "très bien" gibi kelimeler yazmak kesinlikle yasak. Emin olmadığın kelimeleri yazma.
 
@@ -1275,7 +1305,7 @@ Eğer öğrenci seni düzeltirse ve haklıysa → "Haklısın, cümlen doğruydu
 ━━ DURUM 2: Normal konuşma/görev ━━
   1. 💬 Tepki (1-2 cümle)
   2. 📝 Düzeltmeler — SADECE %100 emin olduklarını yaz. Yoksa "Hata yok 🎉"
-  3. 💡 Kelime (Türkçe anlam + doğru İngilizce örnek cümle)
+  3. 💡 Bugünün kelimesi: **word** — Türkçe anlamı (İngilizce örnek cümle). BU FORMATA HARFİYEN UY — kalın kelime, sonra tire, Türkçe anlam, sonra parantez içinde örnek cümle. Konuşmada geçen ya da geçmesi uygun olan yeni/faydalı bir İngilizce kelime seç.
   4. ⭐ Puan [1-10]/10
   5. ❓ Görev — somut: çeviri / tamamlama / hata bul / kelime kullan
 
@@ -1333,14 +1363,24 @@ async function sendMsg(){
       scrollMsgs();
     });
     typer.remove();
-    const{main,corr,word,score,question}=parseAlex(full);
+    const{main,corr,wordData,score,question}=parseAlex(full);
     alexDiv.querySelector('.bub').innerHTML=parseMain(main);
+    makeClickable(alexDiv.querySelector('.bub'));
     if(corr&&!/hata yok/i.test(corr)&&!/harika/i.test(corr)){
       const cd=alexDiv.querySelector('.mcorr');
       cd.innerHTML=`<div style="color:var(--red);font-size:12px;font-weight:600;margin-bottom:5px">📝 Düzeltmeler</div>${corr.replace(/\n/g,'<br>')}`;
       cd.style.display='block';S.alex.corrections++;
     }
-    if(word){alexDiv.querySelector('.mword').textContent='💡 '+word;alexDiv.querySelector('.mword').style.display='block';}
+    if(wordData){
+      const wd=alexDiv.querySelector('.mword');
+      if(wordData.word){
+        const already=dfWords.find(v=>v.word.toLowerCase()===wordData.word.toLowerCase());
+        wd.innerHTML=`💡 <strong>${wordData.word}</strong> — ${wordData.meaning}${wordData.example?` <span style="font-style:italic;opacity:.8">(${wordData.example})</span>`:''} ${already?`<span style="color:var(--grn);font-size:11.5px">✓ defterinde</span>`:`<button onclick="addToVocab('${wordData.word.replace(/'/g,"\\'")}','${wordData.meaning.replace(/'/g,"\\'")}',{ex:'${(wordData.example||'').replace(/'/g,"\\'")}',source:'alex'});this.outerHTML='<span style=&quot;color:var(--grn);font-size:11.5px&quot;>✓ eklendi</span>'" style="margin-left:6px;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--gb);background:var(--gd);color:var(--gold);cursor:pointer">+ Deftere ekle</button>`}`;
+      } else {
+        wd.textContent='💡 '+wordData.raw;
+      }
+      wd.style.display='block';
+    }
     if(score){alexDiv.querySelector('.msc').innerHTML=`⭐ Puan: <span>${score}/10</span>`;alexDiv.querySelector('.msc').style.display='block';S.alex.totalScore+=parseInt(score);}
     if(question){
       const qd=document.createElement('div');
@@ -1359,6 +1399,34 @@ async function sendMsg(){
   document.getElementById('sndbtn').disabled=false;
 }
 
+// Alex'in mesajındaki kelimeleri tıklanabilir yapar (Reading'deki gibi anlam bak / deftere ekle)
+function makeClickable(el){
+  const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);
+  const nodes=[];
+  while(walker.nextNode())nodes.push(walker.currentNode);
+  nodes.forEach(node=>{
+    const text=node.nodeValue;
+    if(!/[a-zA-Z]{3,}/.test(text))return;
+    const frag=document.createDocumentFragment();
+    const parts=text.split(/(\s+)/);
+    parts.forEach(tok=>{
+      if(!tok){return;}
+      if(/^\s+$/.test(tok)){frag.appendChild(document.createTextNode(tok));return;}
+      const m=tok.match(/^([^a-zA-Z']*)([a-zA-Z']+)([^a-zA-Z']*)$/);
+      const clean=m?m[2].replace(/'/g,'').toLowerCase():'';
+      if(!m||clean.length<3){frag.appendChild(document.createTextNode(tok));return;}
+      if(m[1])frag.appendChild(document.createTextNode(m[1]));
+      const span=document.createElement('span');
+      span.className='rw';
+      span.textContent=m[2];
+      span.onclick=(e)=>wordClick(e,clean);
+      frag.appendChild(span);
+      if(m[3])frag.appendChild(document.createTextNode(m[3]));
+    });
+    node.parentNode.replaceChild(frag,node);
+  });
+}
+
 function parseMain(txt){
   return txt
     .replace(/📝 Düzeltmeler:[\s\S]*?(?=💡|⭐|❓|$)/g,'')
@@ -1370,7 +1438,6 @@ function parseMain(txt){
 function parseAlex(txt){
   const sm=txt.match(/⭐ Puan:\s*(\d+)\/10/);
   const cm=txt.match(/📝 Düzeltmeler:([\s\S]*?)(?=💡|⭐|❓|$)/);
-  const wm=txt.match(/💡 Bugünün kelimesi:\s*(.+?)(?:\n|$)/);
   const qm=txt.match(/❓([\s\S]*?)$/);
   const main=txt
     .replace(/📝 Düzeltmeler:[\s\S]*?(?=💡|⭐|❓|$)/g,'')
@@ -1378,7 +1445,16 @@ function parseAlex(txt){
     .replace(/⭐ Puan:.*?(?=❓|$)/ms,'')
     .replace(/❓[\s\S]*$/g,'')
     .trim();
-  return{main,corr:cm?cm[1].trim():null,word:wm?wm[1].trim():null,score:sm?sm[1]:null,question:qm?qm[1].trim():null};
+  // Structured word parse: 💡 Bugünün kelimesi: **word** — Türkçe anlamı (örnek cümle)
+  let wordData=null;
+  const wmStrict=txt.match(/💡 Bugünün kelimesi:\s*\*\*(.+?)\*\*\s*[—\-]\s*([^(\n]+?)(?:\(([^)]*)\))?\s*(?:\n|⭐|❓|$)/);
+  if(wmStrict&&wmStrict[1].trim()){
+    wordData={word:wmStrict[1].trim(),meaning:wmStrict[2].trim(),example:(wmStrict[3]||'').trim(),raw:null};
+  } else {
+    const wmLoose=txt.match(/💡 Bugünün kelimesi:\s*(.+?)(?:\n|$)/);
+    if(wmLoose)wordData={word:null,meaning:null,example:null,raw:wmLoose[1].trim()};
+  }
+  return{main,corr:cm?cm[1].trim():null,wordData,score:sm?sm[1]:null,question:qm?qm[1].trim():null};
 }
 function appendUserMsg(txt){const d=document.createElement('div');d.className='msg u';d.innerHTML=`<div class="mav">👤</div><div class="mbody"><div class="bub">${txt.replace(/</g,'&lt;')}</div><div class="mt">${now()}</div></div>`;document.getElementById('msgs').appendChild(d);scrollMsgs();}
 function appendAlexMsg(txt){const d=document.createElement('div');d.className='msg a';d.innerHTML=`<div class="mav">🎙</div><div class="mbody"><div class="bub">${txt}</div><div class="mt">${now()}</div></div>`;document.getElementById('msgs').appendChild(d);scrollMsgs();}
@@ -1404,8 +1480,7 @@ async function lookupPron(){
 function pronToVocab(){
   const w=document.getElementById('pword').textContent;const d=document.getElementById('pdef').textContent;
   if(!w||!d)return;
-  S.vocab.push({id:Date.now(),word:w,def:d,ex:'',tr:'',added:new Date().toLocaleDateString(),reviews:0,correct:0,streak:0});
-  save();toast(`"${w}" added to vocabulary!`,'ok');
+  addToVocab(w,d,{def:d,source:'manual'});
 }
 
 // ─ TRANSLATION ─
@@ -1425,26 +1500,28 @@ function practiceWithAlex(){
   setTimeout(()=>{document.getElementById('cin').value=txt;},100);
 }
 
-// ═══════════ VOCABULARY ═══════════
+// ═══════════ VOCABULARY (ortak kelime bankası — dfWords) ═══════════
 function renderVL(){
   const q=document.getElementById('vsr').value.toLowerCase();
-  const items=S.vocab.filter(w=>!q||w.word.toLowerCase().includes(q)||w.def.toLowerCase().includes(q));
+  const items=dfWords.filter(w=>!q||w.word.toLowerCase().includes(q)||w.def.toLowerCase().includes(q));
   const el=document.getElementById('vl');
-  if(!items.length){el.innerHTML=`<div class="vempty">${S.vocab.length?'No results found.':'No words yet. Add your first!'}</div>`;return;}
-  el.innerHTML=items.map(w=>`<div class="vi${S.selWId===w.id?' sel':''}" onclick="selWord(${w.id})">
+  if(!items.length){el.innerHTML=`<div class="vempty">${dfWords.length?'No results found.':'No words yet. Add your first!'}</div>`;return;}
+  el.innerHTML=items.map(w=>{const flower=dfGetFlower(w.interval);return`<div class="vi${S.selWId===w.id?' sel':''}" onclick="selWord(${w.id})">
+    <div style="font-size:16px;flex-shrink:0" title="${flower.label}">${flower.emoji}</div>
     <div><div class="viw">${w.word}</div><div class="vid">${w.def}</div></div>
     <div class="sbadge${w.streak>=3?' hot':''}">${w.streak?'🔥'+w.streak:w.reviews+'✓'}</div>
-  </div>`).join('');
+  </div>`;}).join('');
 }
 function filterV(q){renderVL();}
 function selWord(id){
   S.selWId=id;renderVL();
-  const w=S.vocab.find(x=>x.id===id);if(!w)return;
+  const w=dfWords.find(x=>x.id==id);if(!w)return;
   showVP('detail');
   const acc=w.reviews>0?Math.round(w.correct/w.reviews*100):0;
+  const flower=dfGetFlower(w.interval);
   document.getElementById('vdet').innerHTML=`
     <div class="wbig">${w.word}</div>
-    <div class="wmeta">Added ${w.added}</div>
+    <div class="wmeta">Added ${w.added} · <span style="color:${flower.color}">${flower.emoji} ${flower.label}</span></div>
     <div class="dsec"><div class="dlbl">Definition</div><div class="dval">${w.def}</div></div>
     ${w.tr?`<div class="dsec"><div class="dlbl">Türkçe</div><div class="dval">${w.tr}</div></div>`:''}
     ${w.ex?`<div class="dsec"><div class="dlbl">Example</div><div class="dval" style="font-style:italic">"${w.ex}"</div></div>`:''}
@@ -1479,24 +1556,24 @@ function showVP(name){
 function addWord(){
   const w=document.getElementById('aw').value.trim();const d=document.getElementById('ad').value.trim();
   if(!w||!d){toast('Word and definition required','er');return;}
-  if(S.vocab.find(v=>v.word.toLowerCase()===w.toLowerCase())){toast('Word already exists','er');return;}
-  S.vocab.push({id:Date.now(),word:w,def:d,ex:document.getElementById('ae').value.trim(),tr:document.getElementById('atr').value.trim(),added:new Date().toLocaleDateString(),reviews:0,correct:0,streak:0});
-  save();renderVL();clearAddForm();toast(`"${w}" added!`,'ok');
-  S.reading.wordsSaved=S.vocab.length;document.getElementById('rs-w').textContent=S.vocab.length;
+  const before=dfWords.length;
+  addToVocab(w,d,{def:d,ex:document.getElementById('ae').value.trim(),tr:document.getElementById('atr').value.trim(),source:'manual'});
+  if(dfWords.length>before){clearAddForm();}
 }
 function clearAddForm(){['aw','ad','ae','atr'].forEach(id=>document.getElementById(id).value='');}
 function delWord(id){
   if(!confirm('Delete this word?'))return;
-  S.vocab=S.vocab.filter(w=>w.id!==id);if(S.selWId===id)S.selWId=null;
-  save();renderVL();document.getElementById('vdet').innerHTML=`<div style="text-align:center;padding:56px 20px;color:var(--dim)"><div style="font-size:44px;margin-bottom:14px">📚</div><p>Word deleted.</p></div>`;toast('Deleted','in');
+  dfWords=dfWords.filter(w=>w.id!=id);if(S.selWId==id)S.selWId=null;
+  dfSave();dfUpdateStats();renderVL();dfRenderList();dfRenderPacks();
+  document.getElementById('vdet').innerHTML=`<div style="text-align:center;padding:56px 20px;color:var(--dim)"><div style="font-size:44px;margin-bottom:14px">📚</div><p>Word deleted.</p></div>`;toast('Deleted','in');
 }
 function editWord(id){
-  const w=S.vocab.find(x=>x.id===id);if(!w)return;
+  const w=dfWords.find(x=>x.id==id);if(!w)return;
   showVP('add');
   document.getElementById('aw').value=w.word;document.getElementById('ad').value=w.def;document.getElementById('ae').value=w.ex||'';document.getElementById('atr').value=w.tr||'';
   document.querySelector('.aform h2').textContent='Edit Word';
   const btn=document.querySelector('[onclick="addWord()"]');btn.textContent='Save Changes';
-  btn.onclick=()=>{w.word=document.getElementById('aw').value.trim();w.def=document.getElementById('ad').value.trim();w.ex=document.getElementById('ae').value.trim();w.tr=document.getElementById('atr').value.trim();save();renderVL();selWord(w.id);toast('Updated!','ok');btn.onclick=addWord;document.querySelector('.aform h2').textContent='Add New Word';btn.textContent='Add Word';};
+  btn.onclick=()=>{w.word=document.getElementById('aw').value.trim();w.def=document.getElementById('ad').value.trim();w.meaning=w.def;w.ex=document.getElementById('ae').value.trim();w.tr=document.getElementById('atr').value.trim();dfSave();renderVL();dfRenderList();selWord(w.id);toast('Updated!','ok');btn.onclick=addWord;document.querySelector('.aform h2').textContent='Add New Word';btn.textContent='Add Word';};
 }
 async function autoFill(){
   const w=document.getElementById('aw').value.trim();if(!w){toast('Enter a word first','er');return;}
@@ -1518,19 +1595,19 @@ function importWords(){
   for(const line of lines){
     const parts=line.split(/\s*[-–]\s*/,2);const w=parts[0].trim();const d=parts[1]?.trim()||'';
     if(!w)continue;
-    if(S.vocab.find(v=>v.word.toLowerCase()===w.toLowerCase()))continue;
-    S.vocab.push({id:Date.now()+count,word:w,def:d||'(define me)',ex:'',tr:'',added:new Date().toLocaleDateString(),reviews:0,correct:0,streak:0});count++;
+    if(dfWords.find(v=>v.word.toLowerCase()===w.toLowerCase()))continue;
+    dfWords.push(dfNewWord(w,d||'(define me)',{def:d||'(define me)',source:'manual'}));count++;
   }
-  save();renderVL();document.getElementById('impta').value='';toast(`Imported ${count} words`,'ok');
+  dfSave();dfUpdateStats();renderVL();dfRenderList();dfRenderPacks();document.getElementById('impta').value='';toast(`Imported ${count} words`,'ok');
 }
 
 // ─ FLASHCARD ─
 function initFC(){
-  const has=S.vocab.length>0;
+  const has=dfWords.length>0;
   document.getElementById('fce').style.display=has?'none':'block';
   document.getElementById('fcc').style.display=has?'flex':'none';
   if(!has)return;
-  S.fcQ=[...S.vocab].sort(()=>Math.random()-.5);S.fcIdx=0;showFC();
+  S.fcQ=[...dfWords].sort(()=>Math.random()-.5);S.fcIdx=0;showFC();
 }
 function showFC(){
   const w=S.fcQ[S.fcIdx];if(!w)return;
@@ -1543,9 +1620,9 @@ function showFC(){
 }
 function flipCard(){document.getElementById('fc').classList.add('flip');document.getElementById('fcbtns').style.display='flex';}
 function fcAns(ok){
-  const w=S.fcQ[S.fcIdx];const orig=S.vocab.find(v=>v.id===w.id);
-  if(orig){orig.reviews++;if(ok){orig.correct++;orig.streak=(orig.streak||0)+1;}else{orig.streak=0;}save();}
-  S.fcIdx++;if(S.fcIdx>=S.fcQ.length){toast('Session complete! 🎉','ok');S.fcIdx=0;S.fcQ=[...S.vocab].sort(()=>Math.random()-.5);}
+  const w=S.fcQ[S.fcIdx];const orig=dfWords.find(v=>v.id===w.id);
+  if(orig){orig.reviews++;if(ok){orig.correct++;orig.streak=(orig.streak||0)+1;}else{orig.streak=0;}dfSchedule(orig,ok?5:1);dfSave();dfUpdateStats();}
+  S.fcIdx++;if(S.fcIdx>=S.fcQ.length){toast('Session complete! 🎉','ok');S.fcIdx=0;S.fcQ=[...dfWords].sort(()=>Math.random()-.5);}
   showFC();
 }
 
@@ -1553,7 +1630,7 @@ function fcAns(ok){
 let qCurrent=null;
 function setQM(m,btn){S.qMode=m;document.querySelectorAll('.qmb').forEach(b=>b.classList.remove('act'));btn.classList.add('act');nextQ();}
 function initQuiz(){
-  const ok=S.vocab.length>=4;
+  const ok=dfWords.length>=4;
   document.getElementById('qze').style.display=ok?'none':'block';
   document.getElementById('qzc').style.display=ok?'block':'none';
   if(ok)nextQ();
@@ -1562,12 +1639,12 @@ function nextQ(){
   document.getElementById('qfb').className='qfb';document.getElementById('qnxt').className='btnp qnxt';
   if(S.qMode==='choice'){document.getElementById('qtype').style.display='none';document.getElementById('qopts').style.display='flex';}
   else{document.getElementById('qtype').style.display='block';document.getElementById('qopts').style.display='none';}
-  const w=S.vocab[Math.floor(Math.random()*S.vocab.length)];qCurrent=w;
+  const w=dfWords[Math.floor(Math.random()*dfWords.length)];qCurrent=w;
   document.getElementById('qqq').textContent=w.def;
   document.getElementById('qsub').textContent=S.qMode==='choice'?'Choose the correct word:':'Type the English word:';
   document.getElementById('qtype').value='';
   if(S.qMode==='choice'){
-    const wrongs=S.vocab.filter(v=>v.id!==w.id).sort(()=>Math.random()-.5).slice(0,3);
+    const wrongs=dfWords.filter(v=>v.id!==w.id).sort(()=>Math.random()-.5).slice(0,3);
     const opts=[w,...wrongs].sort(()=>Math.random()-.5);
     document.getElementById('qopts').innerHTML=opts.map(o=>`<button class="qopt" onclick="checkOpt(this,'${o.word}','${w.word}')">${o.word}</button>`).join('');
   }
@@ -1577,16 +1654,16 @@ function checkOpt(btn,chosen,correct){
   const ok=chosen===correct;
   btn.classList.add(ok?'c':'w');
   const fb=document.getElementById('qfb');fb.textContent=ok?'✓ Correct!':'✗ The answer was: '+correct;fb.className='qfb '+(ok?'ok':'er');
-  const orig=S.vocab.find(v=>v.word===correct);
-  if(orig){orig.reviews++;if(ok){orig.correct++;orig.streak=(orig.streak||0)+1;}else{orig.streak=0;}save();}
+  const orig=dfWords.find(v=>v.word===correct);
+  if(orig){orig.reviews++;if(ok){orig.correct++;orig.streak=(orig.streak||0)+1;}else{orig.streak=0;}dfSchedule(orig,ok?5:1);dfSave();dfUpdateStats();}
   document.getElementById('qnxt').className='btnp qnxt show';
 }
 function checkType(){
   const val=document.getElementById('qtype').value.trim().toLowerCase();const correct=qCurrent.word.toLowerCase();
   const ok=val===correct;
   const fb=document.getElementById('qfb');fb.textContent=ok?'✓ Correct!':'✗ Answer: '+qCurrent.word;fb.className='qfb '+(ok?'ok':'er');
-  const orig=S.vocab.find(v=>v.id===qCurrent.id);
-  if(orig){orig.reviews++;if(ok){orig.correct++;orig.streak=(orig.streak||0)+1;}else{orig.streak=0;}save();}
+  const orig=dfWords.find(v=>v.id===qCurrent.id);
+  if(orig){orig.reviews++;if(ok){orig.correct++;orig.streak=(orig.streak||0)+1;}else{orig.streak=0;}dfSchedule(orig,ok?5:1);dfSave();dfUpdateStats();}
   document.getElementById('qnxt').className='btnp qnxt show';
 }
 
@@ -1604,7 +1681,7 @@ const PASSAGES=[
 
 function renderPList(){
   document.getElementById('rs-cnt').textContent=S.reading.count;
-  document.getElementById('rs-w').textContent=S.vocab.length;
+  document.getElementById('rs-w').textContent=dfWords.length;
   document.getElementById('plist').innerHTML=PASSAGES.map((p,i)=>`
     <div class="pitem${S.curPIdx===i?' act':''}" onclick="loadP(${i})">
       <div class="ptitle">${p.title}</div>
@@ -1789,7 +1866,7 @@ function startCustomRead(){
 }
 
 function renderReadText(text){
-  const vocabWords=new Set(S.vocab.map(v=>v.word.toLowerCase()));
+  const vocabWords=new Set(dfWords.map(v=>v.word.toLowerCase()));
   const paras=text.split('\n').filter(l=>l.trim());
   const html=paras.map(para=>{
     // Split into sentences
@@ -1875,30 +1952,32 @@ async function wordClick(e,word){
   e.stopPropagation();
   const pop=document.getElementById('popup');
   pop.style.display='block';
+  pop.dataset.ctx=e.target.closest('.msg.a')?'alex':'reading';
   const rect=e.target.getBoundingClientRect();
   let x=rect.left,y=rect.bottom+6;
   if(x+310>window.innerWidth)x=window.innerWidth-315;
   if(y+160>window.innerHeight)y=rect.top-170;
   pop.style.left=x+'px';pop.style.top=y+'px';
   document.getElementById('ppw').textContent=word;
-  const inV=S.vocab.find(v=>v.word.toLowerCase()===word.toLowerCase());
+  const inV=dfWords.find(v=>v.word.toLowerCase()===word.toLowerCase());
   document.getElementById('ppbody').innerHTML=`<div class="ppl">Loading...</div>`;
   if(!S.keys.groq){
-    document.getElementById('ppbody').innerHTML=`<div class="ppd">Add Groq key for definitions.</div><div class="ppacts">${inV?`<span class="pp al">✓ In vocabulary</span>`:`<button class="pp av" onclick="qSaveWord('${word}','')">+ Save word</button>`}<button class="pp say" onclick="speakWord('${word}')">🔊 Listen</button></div>`;
+    document.getElementById('ppbody').innerHTML=`<div class="ppd">Add Groq key for definitions.</div><div class="ppacts">${inV?`<span class="pp al">✓ In vocabulary</span>`:`<button class="pp av" onclick="qSaveWord('${word}','','')">+ Save word</button>`}<button class="pp say" onclick="speakWord('${word}')">🔊 Listen</button></div>`;
     return;
   }
   try{
     const r=await groq([{role:'user',content:`Word: "${word}"`}],'Return ONLY a JSON object: {"def":"concise 1-sentence definition","tr":"Turkish meaning"}. No markdown.');
     const d=JSON.parse(r.replace(/```json|```/g,'').trim());
-    document.getElementById('ppbody').innerHTML=`<div class="ppd">${d.def||''}</div>${d.tr?`<div style="font-size:12px;color:var(--dim);margin-bottom:9px">${d.tr}</div>`:''}<div class="ppacts">${inV?`<span class="pp al">✓ In vocabulary</span>`:`<button class="pp av" onclick="qSaveWord('${word}','${(d.def||'').replace(/'/g,"\\'")}')">+ Save</button>`}<button class="pp say" onclick="speakWord('${word}')">🔊 Listen</button></div>`;
+    document.getElementById('ppbody').innerHTML=`<div class="ppd">${d.def||''}</div>${d.tr?`<div style="font-size:12px;color:var(--dim);margin-bottom:9px">${d.tr}</div>`:''}<div class="ppacts">${inV?`<span class="pp al">✓ In vocabulary</span>`:`<button class="pp av" onclick="qSaveWord('${word}','${(d.def||'').replace(/'/g,"\\'")}','${(d.tr||'').replace(/'/g,"\\'")}')">+ Save</button>`}<button class="pp say" onclick="speakWord('${word}')">🔊 Listen</button></div>`;
   }catch(e){document.getElementById('ppbody').innerHTML=`<div class="ppd">(Could not load)</div><div class="ppacts"><button class="pp say" onclick="speakWord('${word}')">🔊 Listen</button></div>`;}
 }
-function qSaveWord(word,def){
-  if(S.vocab.find(v=>v.word.toLowerCase()===word.toLowerCase())){toast('Already in vocabulary','in');return;}
-  S.vocab.push({id:Date.now(),word,def:def||'(define me)',ex:'',tr:'',added:new Date().toLocaleDateString(),reviews:0,correct:0,streak:0});
-  save();toast(`"${word}" saved to vocabulary!`,'ok');
+function qSaveWord(word,def,tr){
+  const before=dfWords.length;
+  const inAlex=!!document.getElementById('popup').dataset.ctx&&document.getElementById('popup').dataset.ctx==='alex';
+  addToVocab(word,tr||def,{def:def||'(define me)',tr:tr||'',source:inAlex?'alex':'reading'});
+  if(dfWords.length===before)return; // already existed, toast already shown
   document.getElementById('ppbody').querySelector('.ppacts').innerHTML=`<span class="pp al">✓ Saved</span><button class="pp say" onclick="speakWord('${word}')">🔊 Listen</button>`;
-  document.getElementById('rs-w').textContent=S.vocab.length;
+  document.getElementById('rs-w').textContent=dfWords.length;
 }
 function closePopup(){document.getElementById('popup').style.display='none';}
 document.addEventListener('click',e=>{const p=document.getElementById('popup');if(p.style.display!=='none'&&!p.contains(e.target))closePopup();});
@@ -2350,14 +2429,10 @@ function shadStep(step){
 
 function saveShadToVocab(){
   const s=LS.shadShuffle[LS.shadIdx];if(!s)return;
-  if(S.vocab.find(v=>v.word===s.s)){toast('Zaten listende var','in');return;}
-  S.vocab.push({id:Date.now(),word:s.s,def:s.tr,ex:'',tr:s.tr,added:new Date().toLocaleDateString('tr-TR'),reviews:0,correct:0,streak:0});
-  save();renderVL();toast('Kelime listene eklendi!','ok');
+  addToVocab(s.s,s.tr,{tr:s.tr,source:'listening'});
 }
 function saveListenWordToVocab(word,meaning){
-  if(S.vocab.find(v=>v.word.toLowerCase()===word.toLowerCase())){toast('Zaten listende var','in');return;}
-  S.vocab.push({id:Date.now(),word,def:meaning,ex:'',tr:'',added:new Date().toLocaleDateString('tr-TR'),reviews:0,correct:0,streak:0});
-  save();renderVL();toast(`"${word}" eklendi!`,'ok');
+  addToVocab(word,meaning,{source:'listening'});
 }
 function nextShad(){
   LS.shadDone++;LS.shadIdx++;
@@ -3017,9 +3092,28 @@ function dfAddPack(id){
   else toast('Bu paketteki tüm kelimeler zaten defterinde','in');
 }
 
-function dfNewWord(word,meaning){
-  return{id:Date.now()+Math.random(),word:word.trim(),meaning:meaning.trim(),
+function dfNewWord(word,meaning,opts={}){
+  const w=word.trim(),m=(meaning||'').trim();
+  return{id:Date.now()+Math.random(),word:w,meaning:m||'(anlamı ekle)',
+    def:opts.def||m||'(define me)',ex:opts.ex||'',tr:opts.tr||m,
+    added:opts.added||new Date().toLocaleDateString('tr-TR'),
+    reviews:0,correct:0,streak:0,
+    source:opts.source||'manual',
     ef:2.5,interval:1,repetitions:0,due:Date.now(),lastReview:null};
+}
+
+// ── ORTAK KELİME EKLEME — Vocabulary, Kelime Defteri, Reading, Alex, Listening hepsi buradan besleniyor ──
+function addToVocab(word,meaning,opts={}){
+  word=(word||'').trim();meaning=(meaning||'').trim();
+  if(!word)return null;
+  const existing=dfWords.find(v=>v.word.toLowerCase()===word.toLowerCase());
+  if(existing){toast(`"${word}" zaten kelime defterinde var`,'in');return existing;}
+  const nw=dfNewWord(word,meaning,opts);
+  dfWords.push(nw);
+  dfSave();dfUpdateStats();dfRenderList();dfRenderPacks();renderVL();
+  const srcLabel={reading:' · 📖 Reading\'den',alex:' · 🎙 Coach Alex\'ten',listening:' · 🎧 Listening\'den'}[opts.source]||'';
+  toast(`"${word}" eklendi! 🌱${srcLabel}`,'ok');
+  return nw;
 }
 
 function dfSchedule(w,quality){
@@ -3090,11 +3184,9 @@ function dfAddManual(){
   const w=document.getElementById('df-w').value.trim();
   const m=document.getElementById('df-m').value.trim();
   if(!w||!m){toast('Kelime ve anlam gerekli','er');return;}
-  if(dfWords.find(x=>x.word.toLowerCase()===w.toLowerCase())){toast('Bu kelime zaten var','in');return;}
-  dfWords.push(dfNewWord(w,m));
-  dfSave();dfUpdateStats();dfRenderList();
-  document.getElementById('df-w').value='';document.getElementById('df-m').value='';
-  toast(`"${w}" eklendi!`,'ok');
+  const before=dfWords.length;
+  addToVocab(w,m,{source:'manual'});
+  if(dfWords.length>before){document.getElementById('df-w').value='';document.getElementById('df-m').value='';}
 }
 
 // ── FILE IMPORT ──
@@ -3342,7 +3434,6 @@ async function saveToCloud(){
     try{
       const{error}=await sbClient.from('user_data').upsert({
         user_id:sbUser.id,
-        vocab:S.vocab,
         alex:S.alex,
         reading:S.reading,
         learner_profile:S.learnerProfile||null,
@@ -3362,7 +3453,6 @@ async function loadFromCloud(){
     const{data:d,error}=await sbClient.from('user_data').select('*').eq('user_id',sbUser.id).maybeSingle();
     if(error)throw error;
     if(!d){toast('Bulut verisi bulunamadı, yerel veriler korunuyor','in');return;}
-    if(d.vocab&&d.vocab.length>0) S.vocab=d.vocab;
     if(d.alex) S.alex={...S.alex,...d.alex};
     if(d.reading) S.reading={...S.reading,...d.reading};
     if(d.learner_profile) S.learnerProfile=d.learner_profile;
@@ -3413,7 +3503,6 @@ document.addEventListener('click',e=>{
 // ═══════════ INIT ═══════════
 load();
 loadAnnotations();
-dfLoad();
 dfRenderPacks();
 // Init Supabase if config saved
 const _sbUrl=localStorage.getItem('ea_sb_url');
